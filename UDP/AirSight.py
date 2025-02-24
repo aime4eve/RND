@@ -1,78 +1,91 @@
 import socket
 import threading
+from datetime import datetime
 import time
-import datetime
-import struct
 
-# 全局变量
-g_data = b''
-data_lock = threading.Lock()
-version = "1.0"
+class AirSight:
+    def __init__(self, net1_ip, net2_ip):
+        self.g_data = []
+        self.g_data_lock = threading.Lock()
+        self.version = "1.0"
+        
+        # Broadcast servers
+        self.broadcast_servers = [
+            (net1_ip, 9999),
+            (net2_ip, 9999)
+        ]
+        
+        # Multicast settings
+        self.mcast_send_group = ('224.10.11.12', 8888)
+        self.mcast_recv_group = ('224.10.11.22', 7777)
+        self.net1_ip = net1_ip
+        self.net2_ip = net2_ip
 
-def get_local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
+    def start(self):
+        # Start broadcast servers
+        for ip, port in self.broadcast_servers:
+            thread = threading.Thread(target=self.run_broadcast_server, args=(ip, port))
+            thread.daemon = True
+            thread.start()
 
-def get_current_time():
-    now = datetime.datetime.now()
-    return now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        # Start multicast receiver (网1)
+        threading.Thread(target=self.run_mcast_receiver, daemon=True).start()
+        
+        # Start multicast sender (网2)
+        threading.Thread(target=self.run_mcast_sender, daemon=True).start()
 
-def broadcast_server():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(('0.0.0.0', 9999))
-    print("AirSight广播服务已启动 (端口:9999)")
-    while True:
-        data, addr = sock.recvfrom(1024)
-        cmd = data.decode().strip()
-        resp = ""
-        if cmd == "get_server_ip":
-            resp = get_local_ip()
-        elif cmd == "get_mcast_server":
-            resp = "224.10.11.12:8888"
-        elif cmd == "get_mcast_client":
-            resp = "224.10.11.22:7777"
-        elif cmd == "get_time":
-            resp = get_current_time()
-        elif cmd == "get_version":
-            resp = version
-        else:
-            resp = "未知命令"
-        sock.sendto(resp.encode(), addr)
+        while True: time.sleep(1)
 
-def multicast_receiver():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(('', 7777))
-    mreq = struct.pack("4sl", socket.inet_aton("224.10.11.22"), socket.INADDR_ANY)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    print("AirSight组播接收服务已启动 (224.10.11.22:7777)")
-    while True:
-        data, _ = sock.recvfrom(1024)
-        with data_lock:
-            global g_data
-            g_data += data
+    def run_broadcast_server(self, bind_ip, port):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind((bind_ip, port))
+        print(f"Broadcast server running on {bind_ip}:{port}")
+        
+        while True:
+            data, addr = sock.recvfrom(1024)
+            cmd = data.decode().strip()
+            response = self.handle_command(cmd, bind_ip)
+            sock.sendto(response.encode(), addr)
 
-def multicast_sender():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-    print("AirSight组播发送服务准备就绪 (224.10.11.12:8888)")
-    while True:
-        with data_lock:
-            global g_data
-            if g_data:
-                sock.sendto(g_data, ("224.10.11.12", 8888))
-                g_data = b''
-        time.sleep(1)
+    def handle_command(self, cmd, current_ip):
+        if cmd == "get_server_ip": return current_ip
+        elif cmd == "get_mcast_server": return f"{self.mcast_recv_group[0]}:{self.mcast_recv_group[1]}"
+        elif cmd == "get_mcast_client": return f"{self.mcast_send_group[0]}:{self.mcast_send_group[1]}"
+        elif cmd == "get_time": return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        elif cmd == "get_version": return self.version
+        else: return "Invalid command"
+
+    def run_mcast_receiver(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((self.net1_ip, self.mcast_recv_group[1]))
+        
+        mreq = socket.inet_aton(self.mcast_recv_group[0]) + socket.inet_aton(self.net1_ip)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        print(f"Multicast receiver started on {self.mcast_recv_group}")
+
+        while True:
+            data, _ = sock.recvfrom(1024)
+            with self.g_data_lock:
+                self.g_data.append(data)
+
+    def run_mcast_sender(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, 
+                       socket.inet_aton(self.net2_ip))
+        print(f"Multicast sender ready for {self.mcast_send_group}")
+
+        while True:
+            time.sleep(0.1)
+            with self.g_data_lock:
+                if self.g_data:
+                    data = b"".join(self.g_data)
+                    self.g_data.clear()
+                    sock.sendto(data, self.mcast_send_group)
 
 if __name__ == "__main__":
-    threading.Thread(target=broadcast_server, daemon=True).start()
-    threading.Thread(target=multicast_receiver, daemon=True).start()
-    threading.Thread(target=multicast_sender, daemon=True).start()
-    while True:
-        time.sleep(1)
+    # 根据实际网络配置修改IP地址
+    server = AirSight(net1_ip="192.168.43.100", 
+                     net2_ip="192.168.99.100")
+    server.start()
