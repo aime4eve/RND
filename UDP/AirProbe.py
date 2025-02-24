@@ -1,47 +1,41 @@
 import socket
 import time
-import datetime
-import threading
+from datetime import datetime
 
-def get_current_time():
-    now = datetime.datetime.now()
-    return now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+class AirProbe:
+    def __init__(self):
+        self.broadcast_addr = ("192.168.43.255", 9999)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.target_mcast = None
 
-def fetch_mcast_addr(cmd):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.settimeout(5)
-    try:
-        sock.sendto(cmd.encode(), ('255.255.255.255', 9999))
-        data, _ = sock.recvfrom(1024)
-        return data.decode().strip()
-    except socket.timeout:
-        return None
-    finally:
-        sock.close()
+    def discover(self):
+        commands = ["get_mcast_server", "get_server_ip", "get_version"]
+        for cmd in commands:
+            self.sock.sendto(cmd.encode(), self.broadcast_addr)
+            self.sock.settimeout(2)
+            try:
+                resp, _ = self.sock.recvfrom(1024)
+                print(f"{cmd} => {resp.decode()}")
+                if cmd == "get_mcast_server":
+                    ip, port = resp.decode().split(":")
+                    self.target_mcast = (ip, int(port))
+            except socket.timeout:
+                print(f"No response for {cmd}")
 
-def send_loop(mcast_ip, mcast_port):
-    while True:
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-            current_time = get_current_time()
-            sock.sendto(current_time.encode(), (mcast_ip, mcast_port))
-            print(f"发送时间: {current_time}")
-            sock.close()
-        except Exception as e:
-            print(f"发送失败: {e}")
-        time.sleep(3)
-
-def main():
-    mcast_server = fetch_mcast_addr("get_mcast_server")
-    if not mcast_server:
-        print("获取组播地址失败")
-        return
-    mcast_ip, mcast_port = mcast_server.split(':')
-    threading.Thread(target=send_loop, args=(mcast_ip, int(mcast_port)), daemon=True).start()
-    while True:
-        time.sleep(1)
+    def start_sending(self):
+        if not self.target_mcast:
+            print("先运行discover获取组播地址")
+            return
+        
+        mcast_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        while True:
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            mcast_sock.sendto(current_time.encode(), self.target_mcast)
+            print(f"Sent time to {self.target_mcast}")
+            time.sleep(3)
 
 if __name__ == "__main__":
-    main()
+    probe = AirProbe()
+    probe.discover()
+    probe.start_sending()
