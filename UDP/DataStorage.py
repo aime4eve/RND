@@ -1,37 +1,44 @@
 import socket
-import struct
 
-def fetch_mcast_addr(cmd):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.settimeout(5)
-    try:
-        sock.sendto(cmd.encode(), ('255.255.255.255', 9999))
-        data, _ = sock.recvfrom(1024)
-        return data.decode().strip()
-    except socket.timeout:
-        return None
-    finally:
-        sock.close()
+class DataStorage:
+    def __init__(self):
+        self.broadcast_addr = ("192.168.99.255", 9999)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.mcast_group = None
 
-def main():
-    mcast_client = fetch_mcast_addr("get_mcast_client")
-    if not mcast_client:
-        print("获取组播地址失败")
-        return
-    mcast_ip, mcast_port = mcast_client.split(':')
-    mcast_port = int(mcast_port)
-    
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(('', mcast_port))
-    mreq = struct.pack("4sl", socket.inet_aton(mcast_ip), socket.INADDR_ANY)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    
-    print(f"监听组播数据 ({mcast_ip}:{mcast_port})...")
-    while True:
-        data, _ = sock.recvfrom(1024)
-        print(f"接收数据: {data.decode()}")
+    def discover(self):
+        commands = ["get_mcast_client", "get_server_ip"]
+        for cmd in commands:
+            self.sock.sendto(cmd.encode(), self.broadcast_addr)
+            self.sock.settimeout(2)
+            try:
+                resp, _ = self.sock.recvfrom(1024)
+                print(f"{cmd} => {resp.decode()}")
+                if cmd == "get_mcast_client":
+                    ip, port = resp.decode().split(":")
+                    self.mcast_group = (ip, int(port))
+            except socket.timeout:
+                print(f"No response for {cmd}")
+
+    def start_listening(self):
+        if not self.mcast_group:
+            print("先运行discover获取组播地址")
+            return
+        
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", self.mcast_group[1]))
+        
+        mreq = socket.inet_aton(self.mcast_group[0]) + socket.inet_aton("0.0.0.0")
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        print(f"Listening on {self.mcast_group}")
+
+        while True:
+            data, _ = sock.recvfrom(1024)
+            print(f"Received: {data.decode()}")
 
 if __name__ == "__main__":
-    main()
+    ds = DataStorage()
+    ds.discover()
+    ds.start_listening()
