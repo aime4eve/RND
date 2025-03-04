@@ -2,7 +2,7 @@ import socket
 
 class DataStorage:
     def __init__(self):
-        self.broadcast_addr = ("192.168.99.255", 9999)
+        self.broadcast_addr = ("255.255.255.255", 9999)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.mcast_group = None
